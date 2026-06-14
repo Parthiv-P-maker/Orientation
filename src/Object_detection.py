@@ -12,6 +12,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".wmv"}
+EPSILON = 1e-7
 
 
 @dataclass
@@ -21,14 +22,19 @@ class Detection:
     center: tuple[int, int]
     box: np.ndarray
     axis_angle: float
-    display_angle: float
+    signed_angle: float
+    acute_angle: float
+    confidence: float
+    width: float
+    height: float
     axis_length: int
 
 
 def default_source() -> str:
     for candidate in (
         PROJECT_ROOT / "Images" / "test.jpg",
-        PROJECT_ROOT / "Images" / "pinkcup.jpeg",PROJECT_ROOT / "Images" / "testvid1.mp4",
+        PROJECT_ROOT / "Images" / "pinkcup.jpeg",
+        PROJECT_ROOT / "Images" / "testvid1.mp4",
     ):
         if candidate.exists():
             return str(candidate)
@@ -63,15 +69,64 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--method",
-        choices=("pca", "box"),
-        default="pca",
-        help="Orientation method: PCA major axis or min-area-rectangle long side.",
+        choices=("moments", "pca", "box"),
+        default="moments",
+        help="Orientation method: image moments, PCA major axis, or min-area-rectangle long side.",
+    )
+    parser.add_argument(
+        "--angle-format",
+        choices=("acute", "axis", "signed"),
+        default="acute",
+        help=(
+            "Angle shown on the image: acute=0..90 from horizontal, "
+            "axis=0..180, signed=-90..90."
+        ),
+    )
+    parser.add_argument(
+        "--decimals",
+        type=int,
+        default=2,
+        help="Number of decimal places shown for angles.",
+    )
+    parser.add_argument(
+        "--hue-min",
+        type=int,
+        default=0,
+        help="Minimum HSV hue for color segmentation, 0 to 179.",
+    )
+    parser.add_argument(
+        "--hue-max",
+        type=int,
+        default=179,
+        help="Maximum HSV hue for color segmentation, 0 to 179.",
+    )
+    parser.add_argument(
+        "--sat-min",
+        type=int,
+        default=55,
+        help="Minimum HSV saturation for color segmentation.",
+    )
+    parser.add_argument(
+        "--value-min",
+        type=int,
+        default=45,
+        help="Minimum HSV value/brightness for color segmentation.",
     )
     parser.add_argument(
         "--min-area",
         type=float,
         default=1000.0,
         help="Ignore contours smaller than this pixel area.",
+    )
+    parser.add_argument(
+        "--max-objects",
+        type=int,
+        help="Only keep the largest N detected objects.",
+    )
+    parser.add_argument(
+        "--largest-only",
+        action="store_true",
+        help="Shortcut for --max-objects 1.",
     )
     parser.add_argument(
         "--show-mask",
@@ -98,21 +153,67 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_mask(frame: np.ndarray, mode: str) -> np.ndarray:
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def build_color_mask(
+    hsv: np.ndarray,
+    hue_min: int,
+    hue_max: int,
+    sat_min: int,
+    value_min: int,
+) -> np.ndarray:
+    hue_min = clamp_int(hue_min, 0, 179)
+    hue_max = clamp_int(hue_max, 0, 179)
+    sat_min = clamp_int(sat_min, 0, 255)
+    value_min = clamp_int(value_min, 0, 255)
+
+    if hue_min <= hue_max:
+        return cv2.inRange(
+            hsv,
+            np.array([hue_min, sat_min, value_min], dtype=np.uint8),
+            np.array([hue_max, 255, 255], dtype=np.uint8),
+        )
+
+    lower_wrap = cv2.inRange(
+        hsv,
+        np.array([0, sat_min, value_min], dtype=np.uint8),
+        np.array([hue_max, 255, 255], dtype=np.uint8),
+    )
+    upper_wrap = cv2.inRange(
+        hsv,
+        np.array([hue_min, sat_min, value_min], dtype=np.uint8),
+        np.array([179, 255, 255], dtype=np.uint8),
+    )
+    return cv2.bitwise_or(lower_wrap, upper_wrap)
+
+
+def build_mask(
+    frame: np.ndarray,
+    mode: str,
+    hue_min: int,
+    hue_max: int,
+    sat_min: int,
+    value_min: int,
+) -> np.ndarray:
     blurred = cv2.GaussianBlur(frame, (5, 5), 0)
 
     if mode == "color":
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
-        lower = np.array([0, 45, 45], dtype=np.uint8)
-        upper = np.array([179, 255, 255], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
+        mask = build_color_mask(hsv, hue_min, hue_max, sat_min, value_min)
     else:
         gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
         if mode == "dark":
-            _, mask = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY_INV)
+            _, mask = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+            )
         else:
-            _, mask = cv2.threshold(gray, 175, 255, cv2.THRESH_BINARY)
+            _, mask = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
 
+    mask = cv2.medianBlur(mask, 5)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -123,23 +224,65 @@ def normalize_axis_angle(angle_degrees: float) -> float:
     return angle_degrees % 180.0
 
 
-def angle_from_horizontal(axis_angle: float) -> float:
+def signed_axis_angle(axis_angle: float) -> float:
     angle = normalize_axis_angle(axis_angle)
     if angle > 90.0:
-        return 180.0 - angle
+        angle -= 180.0
     return angle
 
 
-def pca_axis_angle(contour: np.ndarray) -> tuple[tuple[int, int], float]:
+def acute_axis_angle(axis_angle: float) -> float:
+    return abs(signed_axis_angle(axis_angle))
+
+
+def orientation_confidence(major_value: float, minor_value: float) -> float:
+    if major_value <= EPSILON:
+        return 0.0
+    confidence = (major_value - minor_value) / major_value
+    return max(0.0, min(1.0, confidence))
+
+
+def moments_axis_angle(contour: np.ndarray) -> tuple[tuple[int, int], float, float]:
+    moments = cv2.moments(contour)
+    if abs(moments["m00"]) <= EPSILON:
+        return pca_axis_angle(contour)
+
+    center = (
+        int(round(moments["m10"] / moments["m00"])),
+        int(round(moments["m01"] / moments["m00"])),
+    )
+    mu20 = moments["mu20"] / moments["m00"]
+    mu02 = moments["mu02"] / moments["m00"]
+    mu11 = moments["mu11"] / moments["m00"]
+
+    angle = 0.5 * math.degrees(math.atan2(2.0 * mu11, mu20 - mu02))
+    common = math.sqrt(4.0 * mu11 * mu11 + (mu20 - mu02) * (mu20 - mu02))
+    major_value = (mu20 + mu02 + common) / 2.0
+    minor_value = (mu20 + mu02 - common) / 2.0
+
+    return (
+        center,
+        normalize_axis_angle(angle),
+        orientation_confidence(major_value, minor_value),
+    )
+
+
+def pca_axis_angle(contour: np.ndarray) -> tuple[tuple[int, int], float, float]:
     points = contour.reshape(-1, 2).astype(np.float32)
-    mean, eigenvectors, _ = cv2.PCACompute2(points, mean=None)
+    mean, eigenvectors, eigenvalues = cv2.PCACompute2(points, mean=None)
     center = (int(mean[0][0]), int(mean[0][1]))
     vector_x, vector_y = eigenvectors[0]
     axis_angle = normalize_axis_angle(math.degrees(math.atan2(vector_y, vector_x)))
-    return center, axis_angle
+    values = eigenvalues.flatten()
+    confidence = (
+        orientation_confidence(float(values[0]), float(values[1]))
+        if len(values) >= 2
+        else 0.0
+    )
+    return center, axis_angle, confidence
 
 
-def box_axis_angle(box: np.ndarray) -> float:
+def box_axis_angle(box: np.ndarray, width: float, height: float) -> tuple[float, float]:
     longest_edge = None
     longest_length = -1.0
 
@@ -153,10 +296,19 @@ def box_axis_angle(box: np.ndarray) -> float:
             longest_edge = edge
 
     if longest_edge is None:
-        return 0.0
+        return 0.0, 0.0
 
-    return normalize_axis_angle(
-        math.degrees(math.atan2(float(longest_edge[1]), float(longest_edge[0])))
+    long_side = max(width, height)
+    short_side = min(width, height)
+    confidence = 0.0
+    if long_side > EPSILON:
+        confidence = orientation_confidence(long_side, short_side)
+
+    return (
+        normalize_axis_angle(
+            math.degrees(math.atan2(float(longest_edge[1]), float(longest_edge[0])))
+        ),
+        confidence,
     )
 
 
@@ -165,9 +317,14 @@ def detect_objects(
     min_area: float,
     mask_mode: str,
     method: str,
+    hue_min: int,
+    hue_max: int,
+    sat_min: int,
+    value_min: int,
+    max_objects: int | None,
 ) -> tuple[list[Detection], np.ndarray]:
-    mask = build_mask(frame, mask_mode)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask = build_mask(frame, mask_mode, hue_min, hue_max, sat_min, value_min)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
     detections: list[Detection] = []
     for contour in contours:
@@ -181,11 +338,13 @@ def detect_objects(
         width, height = rect[1]
         axis_length = max(35, int(max(width, height) * 0.55))
 
-        if method == "pca" and len(contour) >= 2:
-            center, axis_angle = pca_axis_angle(contour)
+        if method == "moments":
+            center, axis_angle, confidence = moments_axis_angle(contour)
+        elif method == "pca" and len(contour) >= 2:
+            center, axis_angle, confidence = pca_axis_angle(contour)
         else:
             center = (int(rect[0][0]), int(rect[0][1]))
-            axis_angle = box_axis_angle(box.astype(np.float32))
+            axis_angle, confidence = box_axis_angle(box.astype(np.float32), width, height)
 
         detections.append(
             Detection(
@@ -194,19 +353,80 @@ def detect_objects(
                 center=center,
                 box=box,
                 axis_angle=axis_angle,
-                display_angle=angle_from_horizontal(axis_angle),
+                signed_angle=signed_axis_angle(axis_angle),
+                acute_angle=acute_axis_angle(axis_angle),
+                confidence=confidence,
+                width=width,
+                height=height,
                 axis_length=axis_length,
             )
         )
 
     detections.sort(key=lambda item: item.area, reverse=True)
+    if max_objects is not None:
+        detections = detections[:max_objects]
+
     for object_id, detection in enumerate(detections, start=1):
         detection.object_id = object_id
 
     return detections, mask
 
 
-def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
+def angle_value(detection: Detection, angle_format: str) -> float:
+    if angle_format == "axis":
+        return detection.axis_angle
+    if angle_format == "signed":
+        return detection.signed_angle
+    return detection.acute_angle
+
+
+def angle_name(angle_format: str) -> str:
+    if angle_format == "axis":
+        return "Axis"
+    if angle_format == "signed":
+        return "Signed"
+    return "Angle"
+
+
+def formatted_angle(detection: Detection, angle_format: str, decimals: int) -> str:
+    decimals = clamp_int(decimals, 0, 4)
+    value = angle_value(detection, angle_format)
+    if angle_format == "signed":
+        return f"{value:+.{decimals}f} deg"
+    return f"{value:.{decimals}f} deg"
+
+
+def draw_text_with_background(
+    image: np.ndarray,
+    text: str,
+    anchor: tuple[int, int],
+    color: tuple[int, int, int] = (0, 255, 0),
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.58
+    thickness = 2
+    padding = 5
+    (text_width, text_height), baseline = cv2.getTextSize(text, font, scale, thickness)
+
+    x = clamp_int(anchor[0], padding, max(padding, image.shape[1] - text_width - padding))
+    y = clamp_int(
+        anchor[1],
+        text_height + padding * 2,
+        max(text_height + padding * 2, image.shape[0] - baseline - padding),
+    )
+
+    top_left = (x - padding, y - text_height - padding)
+    bottom_right = (x + text_width + padding, y + baseline + padding)
+    cv2.rectangle(image, top_left, bottom_right, (0, 0, 0), -1)
+    cv2.putText(image, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
+
+
+def draw_detections(
+    frame: np.ndarray,
+    detections: list[Detection],
+    angle_format: str,
+    decimals: int,
+) -> np.ndarray:
     annotated = frame.copy()
 
     for detection in detections:
@@ -216,29 +436,33 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
         dy = int(math.sin(theta) * detection.axis_length)
         start = (center_x - dx, center_y - dy)
         end = (center_x + dx, center_y + dy)
+        reference_length = max(40, int(detection.axis_length * 0.7))
+        reference_start = (center_x - reference_length, center_y)
+        reference_end = (center_x + reference_length, center_y)
 
         cv2.drawContours(annotated, [detection.box], 0, (0, 255, 0), 2)
         cv2.circle(annotated, detection.center, 5, (0, 0, 255), -1)
+        cv2.line(annotated, reference_start, reference_end, (200, 200, 200), 1)
         cv2.line(annotated, start, end, (255, 0, 0), 2)
 
-        label = f"Obj {detection.object_id}: {detection.display_angle:.1f} deg"
-        label_x = min(center_x + 12, max(0, annotated.shape[1] - 190))
-        label_y = max(24, center_y - 12)
-        cv2.putText(
-            annotated,
-            label,
-            (label_x, label_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
+        label = (
+            f"Obj {detection.object_id}: "
+            f"{formatted_angle(detection, angle_format, decimals)} "
+            f"| conf {detection.confidence * 100:.0f}%"
         )
+        label_x = center_x + 12
+        label_y = max(24, center_y - 12)
+        draw_text_with_background(annotated, label, (label_x, label_y))
 
     return annotated
 
 
-def print_summary(source_name: str, detections: list[Detection]) -> None:
+def print_summary(
+    source_name: str,
+    detections: list[Detection],
+    angle_format: str,
+    decimals: int,
+) -> None:
     print(f"Source: {source_name}")
     print(f"Detected Objects: {len(detections)}")
 
@@ -247,7 +471,11 @@ def print_summary(source_name: str, detections: list[Detection]) -> None:
             f"Object {detection.object_id}: "
             f"Area={detection.area:.0f}, "
             f"Center={detection.center}, "
-            f"Angle={detection.display_angle:.2f} deg"
+            f"{angle_name(angle_format)}={formatted_angle(detection, angle_format, decimals)}, "
+            f"Axis={detection.axis_angle:.2f} deg, "
+            f"Signed={detection.signed_angle:+.2f} deg, "
+            f"Confidence={detection.confidence * 100:.0f}%, "
+            f"Box={detection.width:.0f}x{detection.height:.0f}"
         )
 
 
@@ -267,6 +495,12 @@ def save_image(path: str, image: np.ndarray) -> None:
     print(f"Saved annotated image: {output_path}")
 
 
+def selected_max_objects(args: argparse.Namespace) -> int | None:
+    if args.largest_only:
+        return 1
+    return args.max_objects
+
+
 def run_image(args: argparse.Namespace, source_path: Path) -> None:
     image = cv2.imread(str(source_path))
     if image is None:
@@ -277,9 +511,14 @@ def run_image(args: argparse.Namespace, source_path: Path) -> None:
         min_area=args.min_area,
         mask_mode=args.mask_mode,
         method=args.method,
+        hue_min=args.hue_min,
+        hue_max=args.hue_max,
+        sat_min=args.sat_min,
+        value_min=args.value_min,
+        max_objects=selected_max_objects(args),
     )
-    annotated = draw_detections(image, detections)
-    print_summary(str(source_path), detections)
+    annotated = draw_detections(image, detections, args.angle_format, args.decimals)
+    print_summary(str(source_path), detections, args.angle_format, args.decimals)
 
     if args.output:
         save_image(args.output, annotated)
@@ -331,8 +570,15 @@ def run_stream(args: argparse.Namespace, capture_source: int | str) -> None:
                 min_area=args.min_area,
                 mask_mode=args.mask_mode,
                 method=args.method,
+                hue_min=args.hue_min,
+                hue_max=args.hue_max,
+                sat_min=args.sat_min,
+                value_min=args.value_min,
+                max_objects=selected_max_objects(args),
             )
-            annotated = draw_detections(frame, detections)
+            annotated = draw_detections(
+                frame, detections, args.angle_format, args.decimals
+            )
 
             if writer is None and args.output:
                 height, width = annotated.shape[:2]
@@ -368,9 +614,26 @@ def source_is_camera(source: str) -> bool:
     return source.strip().isdigit()
 
 
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.min_area <= 0:
+        parser.error("--min-area must be greater than 0.")
+    if args.max_objects is not None and args.max_objects <= 0:
+        parser.error("--max-objects must be greater than 0.")
+    if not 0 <= args.hue_min <= 179:
+        parser.error("--hue-min must be between 0 and 179.")
+    if not 0 <= args.hue_max <= 179:
+        parser.error("--hue-max must be between 0 and 179.")
+    if not 0 <= args.sat_min <= 255:
+        parser.error("--sat-min must be between 0 and 255.")
+    if not 0 <= args.value_min <= 255:
+        parser.error("--value-min must be between 0 and 255.")
+    args.decimals = clamp_int(args.decimals, 0, 4)
+
+
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+    validate_args(parser, args)
 
     if args.webcam is not None:
         run_stream(args, args.webcam)
