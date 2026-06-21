@@ -1,14 +1,14 @@
-# Object Orientation Detection
+# Object Orientation Detector
 
-Computer vision application that detects objects and estimates their orientation angle
-with respect to the horizontal image axis. The app supports still images, video files,
-and real-time webcam input.
+Computer vision application that detects objects from a webcam feed and estimates
+their orientation angle with respect to both the horizontal and vertical image axes.
 
 ## Features
 
 - Detects one or more objects in an image, video, or webcam feed.
 - Estimates each object's major-axis orientation angle using image moments by default.
-- Prints the displayed angle, full axis angle, signed angle, confidence, and box size.
+- Prints both horizontal and vertical orientation angles, plus full axis angle,
+  signed angle, confidence, and box size.
 - Draws the rotated bounding box, center point, reference line, orientation line, and angle label.
 - Supports colored objects by default, with extra modes for dark or bright objects.
 
@@ -22,23 +22,17 @@ pip install -r requirements.txt
 
 ## Run
 
-Detect objects in the sample image and save the result:
-
-```powershell
-python src\Object_detection.py --source Images\test.jpg --output Outputs\test_result.jpg --no-display
-```
-
-Run on the pink cup image:
-
-```powershell
-python src\Object_detection.py --source Images\pinkcup.jpeg --largest-only
-```
-
-Run in real time with a webcam:
+Run in real time with a webcam (default camera index 0):
 
 ```powershell
 python src\Object_detection.py --webcam 0
 ```
+
+The output overlay and console summary will show both the horizontal and vertical
+angles for each detected object.
+
+The output overlay and console summary will show both the horizontal and vertical
+angles for each detected object.
 
 Run on a video and save an annotated demo:
 
@@ -63,6 +57,7 @@ Press `q` or `Esc` to quit a live display window.
 - `--min-area 1000`: Ignore contours smaller than this area in pixels.
 - `--largest-only`: Keep only the largest detected object.
 - `--max-objects N`: Keep only the largest `N` detected objects.
+- `--best-only`: Only print the best detection by confidence and highlight it in the overlay.
 - `--show-mask`: Show the binary segmentation mask.
 - `--no-display`: Run headless and only write output / print results.
 
