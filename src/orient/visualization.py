@@ -97,7 +97,7 @@ class Visualizer:
                 )
                 if abs(av) > 0.1:
                     label += f" w:{av:.1f}deg/s"
-                _draw_label(out, label, (cx + 12, max(24, cy - 12)))
+                draw_label(out, label, (cx + 12, max(24, cy - 12)))
 
         if self.show_dashboard:
             self._draw_dashboard(out, detections, measurements, reference_set)
@@ -124,16 +124,17 @@ class Visualizer:
 
         y = 20
         for line in lines:
-            _draw_label(out, line, (10, y), color=(0, 255, 255))
+            draw_label(out, line, (10, y), color=(0, 255, 255))
             y += 28
 
 
-def _draw_label(
+def draw_label(
     image: np.ndarray,
     text: str,
     anchor: tuple[int, int],
     color: tuple[int, int, int] = (0, 255, 0),
 ) -> None:
+    """Draw anti-aliased text with a solid background box, clamped to image bounds."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.55
     thickness = 2

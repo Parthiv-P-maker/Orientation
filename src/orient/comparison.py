@@ -6,13 +6,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from .detector import ObjectDetector
 from .geometry import relative_angle, rotation_direction
-from .reference_manager import ReferenceManager
-from .visualization import Visualizer, _draw_label
+from .visualization import draw_label
 
 
 @dataclass
@@ -56,19 +54,24 @@ def annotate_comparison(
     result: ComparisonResult,
     decimals: int = 2,
 ) -> np.ndarray:
+    gap = 20
+    footer = 50
     h1, w1 = ref_image.shape[:2]
     h2, w2 = cur_image.shape[:2]
-    h = max(h1, h2)
-    canvas = np.zeros((h, w1 + w2 + 20, 3), dtype=np.uint8)
-    canvas[:h1, :w1] = ref_image
-    canvas[:h2, w1 + 20:] = cur_image
+    panel_h = max(h1, h2)
 
-    _draw_label(canvas, f"REFERENCE: {result.reference_angle:.{decimals}f}deg", (10, h + 30 if h + 30 < canvas.shape[0] else h - 60))
-    _draw_label(canvas, f"CURRENT: {result.current_angle:.{decimals}f}deg", (w1 + 30, h + 30 if h + 30 < canvas.shape[0] else h - 60))
-    _draw_label(
+    canvas = np.zeros((panel_h + footer, w1 + w2 + gap, 3), dtype=np.uint8)
+    canvas[:h1, :w1] = ref_image
+    canvas[:h2, w1 + gap:] = cur_image
+
+    footer_y = panel_h + 30
+    draw_label(canvas, f"REFERENCE: {result.reference_angle:.{decimals}f}deg", (10, footer_y))
+    draw_label(canvas, f"CURRENT: {result.current_angle:.{decimals}f}deg", (w1 + gap + 10, footer_y))
+    draw_label(
         canvas,
-        f"RELATIVE: {result.relative_rotation:+.{decimals}f}deg ({result.direction}) Conf:{result.confidence*100:.0f}%",
-        (10, 20),
+        f"RELATIVE: {result.relative_rotation:+.{decimals}f}deg "
+        f"({result.direction}) Conf:{result.confidence * 100:.0f}%",
+        (10, 24),
         color=(0, 255, 255),
     )
     return canvas
