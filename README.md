@@ -1,16 +1,97 @@
-# Object Orientation Detector
+# Reference-Based Object Orientation Measurement System
 
-Computer vision application that detects objects from a webcam feed and estimates
-their orientation angle with respect to both the horizontal and vertical image axes.
+A computer vision system that measures object orientation **relative to a stored reference frame**, not relative to the camera's image axes.
 
-## Features
+Traditional orientation detectors report angles from the camera X-axis. This system stores a reference orientation on the first frame (or user command) and reports all subsequent angles as **relative rotation from that reference**.
 
-- Detects one or more objects in an image, video, or webcam feed.
-- Estimates each object's major-axis orientation angle using image moments by default.
-- Prints both horizontal and vertical orientation angles, plus full axis angle,
-  signed angle, confidence, and box size.
-- Draws the rotated bounding box, center point, reference line, orientation line, and angle label.
-- Supports colored objects by default, with extra modes for dark or bright objects.
+## Architecture
+
+```
+src/orient/
+├── main.py              # CLI entry point
+├── config.py            # JSON configuration management
+├── detector.py          # Object detection pipeline
+├── segmentation.py      # Pluggable segmentation (HSV, threshold, adaptive, edge, background)
+├── orientation.py       # Orientation estimators (moments, PCA, min-area-rect, ellipse, hull)
+├── reference_manager.py # Reference frame storage and relative angle computation
+├── tracker.py           # Centroid-based object tracking
+├── comparison.py        # Image-to-image comparison
+├── visualization.py     # Professional overlays and dashboard
+├── logger.py            # CSV/JSON data export
+├── geometry.py          # Angle normalization utilities
+├── image_mode.py        # Image vs Image mode
+├── video_mode.py        # Video analysis mode
+└── live_mode.py         # Live camera mode
+```
+
+## Pipeline
+
+```
+Frame → Segmentation → Contour Extraction → Orientation Estimation
+                                                     ↓
+                                            Reference Manager
+                                                     ↓
+                                        Relative Angle = Current − Reference
+                                                     ↓
+                                          Tracking → Visualization → Export
+```
+
+## Operating Modes
+
+### 1. Image vs Image
+
+Compare two images — the first is the reference, the second is the comparison target.
+
+```powershell
+python -m orient.main --mode image --reference samples/ref.jpg --source samples/current.jpg --output outputs/
+```
+
+### 2. Video Analysis
+
+The first frame becomes the reference. Tracks objects and reports relative rotation throughout.
+
+```powershell
+python -m orient.main --mode video --source video.mp4 --output-video outputs/annotated.mp4 --save-csv --save-json
+```
+
+### 3. Live Camera
+
+Press **SPACE** to set the current frame as reference. Press **R** to reset. Press **Q** or **ESC** to quit.
+
+```powershell
+python -m orient.main --mode live --webcam 0
+```
+
+## Orientation Algorithms
+
+| Method | Flag | Best for |
+|--------|------|----------|
+| Image Moments | `--method moments` | Filled, solid objects (default) |
+| PCA | `--method pca` | Point clouds, sparse contours |
+| Min-Area Rectangle | `--method box` | Rectangular objects |
+| Ellipse Fitting | `--method ellipse` | Elliptical/rounded objects |
+| Convex Hull PCA | `--method hull` | Irregular shapes |
+
+## Segmentation Modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| HSV Color | `--mask-mode color` | Saturated colored objects (default) |
+| Dark Object | `--mask-mode dark` | Dark on light background |
+| Bright Object | `--mask-mode bright` | Light on dark background |
+| Adaptive | `--mask-mode adaptive` | Variable lighting |
+| Edge | `--mask-mode edge` | Edge-based detection |
+| Background Sub | `--mask-mode background` | Moving objects |
+
+## Industrial Inspection
+
+Check if objects are within angular tolerance:
+
+```powershell
+python -m orient.main --mode live --inspection --target-angle 45 --tolerance 2
+```
+
+Objects are highlighted **green** (PASS) or **red** (FAIL).
 
 ## Setup
 
@@ -20,72 +101,64 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Run
-
-Run in real time with a webcam (default camera index 0):
+## Run Tests
 
 ```powershell
-python src\Object_detection.py --webcam 0
+pip install pytest
+pytest
 ```
 
-The output overlay and console summary will show both the horizontal and vertical
-angles for each detected object.
+## CLI Reference
 
-The output overlay and console summary will show both the horizontal and vertical
-angles for each detected object.
-
-Run on a video and save an annotated demo:
-
-```powershell
-python src\Object_detection.py --source demo.mp4 --output Outputs\demo_result.mp4 --no-display
+```
+--mode            image | video | live
+--reference       Reference image (image mode)
+--source          Input image or video
+--webcam          Camera index (default: 0)
+--output          Output directory (default: outputs/)
+--output-video    Path for annotated output video
+--mask-mode       color | dark | bright | adaptive | edge | background
+--method          moments | pca | box | ellipse | hull
+--hue-min/max     HSV hue range (0-179)
+--sat-min         Minimum saturation (0-255)
+--value-min       Minimum value (0-255)
+--min-area        Minimum contour area (default: 1000)
+--max-objects     Keep only N largest objects
+--largest-only    Keep only the largest object
+--decimals        Decimal places for angles (default: 2)
+--save-csv        Export frame data to CSV
+--save-json       Export frame data to JSON
+--show-debug      Show binary mask window
+--no-display      Run headless
+--inspection      Enable pass/fail tolerance checking
+--target-angle    Target angle for inspection (default: 0)
+--tolerance       Tolerance in degrees (default: 2)
+--config          Load settings from JSON file
+--save-config     Save settings to JSON file
 ```
 
-Press `q` or `Esc` to quit a live display window.
+## Mathematical Foundation
 
-## Useful Options
+The relative angle is computed as:
 
-- `--mask-mode color`: Detect saturated colored objects. This is the default.
-- `--mask-mode dark`: Detect dark objects on a light background.
-- `--mask-mode bright`: Detect bright objects on a dark background.
-- `--method moments`: Estimate orientation from the object's image moments. This is the default.
-- `--method pca`: Estimate orientation from the contour's principal axis.
-- `--method box`: Estimate orientation from the long side of the minimum-area rectangle.
-- `--angle-format acute`: Show the smallest angle from horizontal, `0` to `90` degrees.
-- `--angle-format axis`: Show the full undirected axis angle, `0` to `180` degrees.
-- `--angle-format signed`: Show the signed angle, `-90` to `90` degrees.
-- `--hue-min`, `--hue-max`, `--sat-min`, `--value-min`: Tune HSV color segmentation.
-- `--min-area 1000`: Ignore contours smaller than this area in pixels.
-- `--largest-only`: Keep only the largest detected object.
-- `--max-objects N`: Keep only the largest `N` detected objects.
-- `--best-only`: Only print the best detection by confidence and highlight it in the overlay.
-- `--show-mask`: Show the binary segmentation mask.
-- `--no-display`: Run headless and only write output / print results.
+```
+θ_relative = normalize(θ_current − θ_reference)
+```
 
-## Approach
+Where `normalize` maps the result to (−180°, 180°]. Positive values indicate counter-clockwise rotation from the reference; negative values indicate clockwise.
 
-1. The input frame is blurred slightly to reduce noise.
-2. A binary mask is created using HSV saturation for colored objects, or grayscale
-   thresholding for dark/bright objects.
-3. Morphological open and close operations remove small noise and fill small holes.
-4. External contours are extracted from the cleaned mask.
-5. Small contours are filtered out using `--min-area`.
-6. For each remaining contour, the orientation is estimated using image moments by
-   default. This uses the whole object shape, not just one rectangle angle, and is
-   usually more stable for filled objects.
-7. A confidence score is calculated from how elongated the detected shape is. Long,
-   narrow objects have more reliable orientation than circular or square objects.
-8. The displayed angle is normalized according to `--angle-format`. The default
-   `acute` mode reports the smallest angle from the horizontal reference axis.
-9. The output frame is annotated with the bounding box, center point, horizontal
-   reference line, orientation axis, confidence, and angle text.
+Orientation confidence is the eigenvalue ratio:
 
-## Demo Video
+```
+confidence = (λ_major − λ_minor) / λ_major
+```
 
-For the demonstration video, run the webcam command and record the application
-window, or process a video file with `--output` to generate an annotated result.
+A perfectly circular object has confidence 0 (ambiguous orientation). A long, narrow object approaches confidence 1.
 
-## GitHub Deliverable
+## Applications
 
-Commit the source code, sample images, `requirements.txt`, and this README to your
-repository. Include the generated demo video or upload it separately and link it in
-the repository description.
+- Quality inspection on assembly lines
+- Robotic pick-and-place alignment verification
+- Part rotation measurement in manufacturing
+- Weld seam angle verification
+- PCB component orientation checking

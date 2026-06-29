@@ -1,0 +1,41 @@
+{
+  "segmentation": {
+    "mode": "color",
+    "hue_min": 0,
+    "hue_max": 179,
+    "sat_min": 55,
+    "value_min": 45,
+    "min_area": 1000.0
+  },
+  "tracking": {
+    "tracker_type": "centroid",
+    "max_disappeared": 15,
+    "max_distance": 80.0
+  },
+  "visualization": {
+    "show_reference_axes": true,
+    "show_bounding_box": true,
+    "show_centroid": true,
+    "show_orientation_axis": true,
+    "show_convex_hull": false,
+    "show_rotation_arrow": true,
+    "show_labels": true,
+    "show_dashboard": true,
+    "show_debug": false,
+    "antialiased": true
+  },
+  "camera": {
+    "width": 1280,
+    "height": 720,
+    "index": 0
+  },
+  "inspection": {
+    "enabled": false,
+    "target_angle": 0.0,
+    "tolerance": 2.0
+  },
+  "orientation_method": "moments",
+  "angle_format": "relative",
+  "decimals": 2,
+  "max_objects": null
+}
